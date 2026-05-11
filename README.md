@@ -1,4 +1,4 @@
-# Stackable Agent Sandbox
+# Agent Sandbox
 
 A rootless container that runs `claude --dangerously-skip-permissions` against your project, with `kubectl`/`helm`/`stackablectl`/Rust/Node pre-installed, wired into your host `minikube`. You edit files from the host with whatever editor you already use; the agent runs YOLO inside the container, where its blast radius is limited to the explicit bind mounts.
 
@@ -6,8 +6,6 @@ A rootless container that runs `claude --dangerously-skip-permissions` against y
 
 - Linux host with Docker running.
 - Optional but expected: `minikube` with `--driver=docker`.
-
-UID/GID are detected automatically — no `--build-arg` gymnastics required.
 
 ## First run
 
@@ -34,21 +32,9 @@ The container `$HOME` mirrors the host `$HOME` (same username, same UID/GID), so
 
 Everything else (rustup toolchains, npm caches, anything the agent installs) lives inside the container and evaporates on exit.
 
-## Editing in parallel
-
-Open the same directory in your host editor (VS Code, JetBrains, host `nvim`, whatever) — the bind mount means both see identical files. When the agent edits, your editor picks up the change on next refresh; when you edit, the agent sees the change on its next read.
-
-If you want to poke around inside the container while the agent is running, grab its ID and `exec` in:
-
-```bash
-docker ps --filter ancestor=stackable-agent-sandbox -q | head -1 | xargs -r -I{} docker exec -it {} bash
-```
-
 ## Cluster networking
 
 `run.sh` joins the container to the `minikube` docker network so `kubectl`/`helm` reach the API server at `https://minikube:8443`. The host kubeconfig is rewritten on the fly: only `clusters[].cluster.server` is changed to `https://minikube:8443`. Cert paths under `~/.minikube/...` are left alone because container `$HOME` matches host `$HOME` and `~/.minikube` is bind-mounted at the same path.
-
-If the `minikube` docker network is absent (no cluster running, or non-docker driver), `run.sh` warns and continues without cluster wiring.
 
 ## Common operations
 
@@ -57,7 +43,6 @@ If the `minikube` docker network is absent (no cluster running, or non-docker dr
 | Run from any project | `~/path/to/agent-sandbox/run.sh` |
 | Force a rebuild | `REBUILD=1 ~/path/to/agent-sandbox/run.sh` |
 | Override target workspace | `~/path/to/agent-sandbox/run.sh /some/other/dir` |
-| Bump tool versions | edit `ARG …_VERSION=` lines at the top of `Dockerfile`, then `REBUILD=1 ./run.sh` |
 
 ## Threat model
 
@@ -76,8 +61,6 @@ It **cannot**:
 
 The threat model assumes the agent is *non-malicious but error-prone*. If you need to defend against an actively adversarial agent (jailbreak, prompt-injection), note that several persistence channels into the host claude remain open: writable session history under `~/.claude/projects/`, `settings.local.json`, and workspace-level hook config. Closing them means giving up `claude resume` continuity.
 
-If you're not OK with agent code touching your host `minikube` cluster, point `run.sh` at a throwaway cluster (kind, k3d) or strip the `--network=minikube` line.
-
 ## Known gotchas
 
 - **kubeconfig staleness** — if you `minikube delete && minikube start` while a sandbox is running, the cert paths inside the container go stale. Exit and re-run `run.sh`.
@@ -87,12 +70,3 @@ If you're not OK with agent code touching your host `minikube` cluster, point `r
 - **Open network egress** — the agent can `cargo install` whatever it wants. If exfiltration is in your threat model, this tool isn't it.
 - **macOS untested** — minikube docker-driver networking + `~/.minikube` paths get messy across the macOS VM boundary. Linux only for now.
 - **Session history shared** — the in-container `claude` uses your host `~/.claude/projects/` for session storage; in-sandbox conversations show up in `claude resume` on the host. By design — that's how memory persists across runs.
-
-## Files
-
-```
-agent-sandbox/
-├── Dockerfile   # debian:12-slim base, parameterized UID/GID, pinned tool versions
-├── run.sh       # auto-build, kubeconfig rewrite, mount orchestration, exec claude
-└── README.md    # this file
-```
