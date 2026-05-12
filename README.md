@@ -43,6 +43,8 @@ Everything else (rustup toolchains, npm caches, anything the agent installs) liv
 | Run from any project | `~/path/to/agent-sandbox/run.sh` |
 | Force a rebuild | `REBUILD=1 ~/path/to/agent-sandbox/run.sh` |
 | Override target workspace | `~/path/to/agent-sandbox/run.sh /some/other/dir` |
+| Drop into a shell instead of claude | `~/path/to/agent-sandbox/run.sh --shell` (useful for running other agentic CLIs in the same sandboxed environment) |
+| Reach a service on the host (e.g. ollama) | `HOST_GATEWAY=1 ~/path/to/agent-sandbox/run.sh` — adds `host.docker.internal` pointing at the host. The service must be listening on a non-loopback interface (for ollama: `OLLAMA_HOST=0.0.0.0:11434`). |
 
 ## Threat model
 

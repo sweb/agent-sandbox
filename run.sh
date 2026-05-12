@@ -5,8 +5,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE="stackable-agent-sandbox"
 TAG="latest"
 
-WORKSPACE_ARG="${1:-$PWD}"
-WORKSPACE="$(cd "$WORKSPACE_ARG" && pwd)"
+SHELL_MODE=0
+WORKSPACE_ARG=""
+for arg in "$@"; do
+    case "$arg" in
+        --shell) SHELL_MODE=1 ;;
+        -*) echo "error: unknown flag '$arg'" >&2; exit 1 ;;
+        *)
+            if [ -n "$WORKSPACE_ARG" ]; then
+                echo "error: unexpected extra argument '$arg'" >&2
+                exit 1
+            fi
+            WORKSPACE_ARG="$arg"
+            ;;
+    esac
+done
+WORKSPACE="$(cd "${WORKSPACE_ARG:-$PWD}" && pwd)"
 
 HOST_UID=$(id -u)
 HOST_GID=$(id -g)
@@ -52,6 +66,13 @@ DOCKER_ARGS=(
     --env "TERM=${TERM:-xterm-256color}"
 )
 [ -n "${COLORTERM:-}" ] && DOCKER_ARGS+=(--env "COLORTERM=$COLORTERM")
+
+# Expose the host to the container as `host.docker.internal`. Opt-in because
+# it's only useful when something is listening on the host (e.g. ollama bound
+# to 0.0.0.0) and we don't want to imply that connectivity by default.
+if [ -n "${HOST_GATEWAY:-}" ]; then
+    DOCKER_ARGS+=(--add-host "host.docker.internal:host-gateway")
+fi
 
 # --- Minikube wiring (non-fatal if absent) ---
 TMP_KUBECONFIG=""
@@ -131,6 +152,10 @@ DOCKER_ARGS+=(
     -w "$WORKSPACE"
 )
 
-exec docker run "${DOCKER_ARGS[@]}" \
-    "$IMAGE:$TAG" \
-    claude --dangerously-skip-permissions
+if [ "$SHELL_MODE" = "1" ]; then
+    exec docker run "${DOCKER_ARGS[@]}" "$IMAGE:$TAG" bash
+else
+    exec docker run "${DOCKER_ARGS[@]}" \
+        "$IMAGE:$TAG" \
+        claude --dangerously-skip-permissions
+fi
