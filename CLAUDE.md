@@ -6,7 +6,7 @@ A rootless Docker container running `claude --dangerously-skip-permissions` agai
 
 - `Dockerfile` — image recipe; parameterized by `UID`/`GID`/`USERNAME` build args
 - `run.sh` — host-side launcher; rebuilds image on label drift, mounts `~/.claude`, wires minikube net
-- `Makefile` — image management (`build`/`rebuild`/`clean`/`inspect`/`size`/`shell`)
+- `Makefile` — image management (`build`/`rebuild`/`clean`/`clean-home`/`inspect`/`size`/`shell`)
 
 ## Design invariants
 
@@ -20,6 +20,8 @@ A rootless Docker container running `claude --dangerously-skip-permissions` agai
 3. **kubeconfig rewrite:** `clusters[].cluster.server → https://minikube:8443`. The container joins the `minikube` docker network where the API server is reachable as the hostname `minikube` on 8443. Cert paths under `~/.minikube/...` resolve naturally because `$HOME` matches host — *no sed-based path remap is needed* (was needed earlier when container user was `dev`).
 
 4. **Image is per-host-user.** `run.sh` reads labels `sandbox.uid`/`sandbox.gid`/`sandbox.username` and rebuilds on drift, or when `REBUILD=1`. Single tag (`:latest`), per-machine image.
+
+5. **Persistent `$HOME` is a named Docker volume.** `run.sh` mounts `agent-sandbox-home-$HOST_USER` at `$CONTAINER_HOME`. Docker auto-seeds the volume from the image's `/home/$USER` on first use, so build-time installs (`.cargo`, `.rustup`) populate transparently with no Dockerfile refactor. The volume is shared across every `./run.sh` invocation for the same host user (workspace is still per-invocation; only `$HOME` persists). The nested `~/.claude`, `~/.minikube`, `~/.claude.json`, and `$TMP_KUBECONFIG` bind mounts still shadow their paths inside this volume. Image rebuilds do **not** refresh the volume — mirrors host reality (an OS upgrade doesn't auto-rewrite `~/.cargo`); if a Dockerfile bump changes rust/node/etc., run `make clean-home` (or `docker volume rm agent-sandbox-home-$USER`) to pick up the new versions in `$HOME`. Per-cwd `HISTFILE` is configured in `/etc/bash.bashrc` keyed by sha1 of `AGENT_SANDBOX_WORKSPACE` (set by `run.sh`), so parallel sessions in different workspaces don't pollute each other's bash history.
 
 ## Build details that bit us
 
@@ -42,7 +44,10 @@ Each path is bind-mounted RW at the same path inside the container.
 ```bash
 REBUILD=1 ./run.sh   # ignore label check; uses Docker layer cache
 make rebuild         # ignore Docker layer cache too (--no-cache)
+make clean-home      # nuke the persistent $HOME volume (caches, history, anything in $HOME)
 ```
+
+`clean-home` is independent of image rebuild: rebuilding the image does **not** refresh the volume's contents. Run `clean-home` when you want a fresh `$HOME` (e.g. after bumping rust/node versions and wanting the new toolchain in `$HOME` rather than the seeded-from-old-image one).
 
 ## Threat model boundary
 
@@ -50,11 +55,14 @@ The agent has YOLO permissions on:
 - the container filesystem,
 - the bind-mounted host project (mounted at its host path),
 - host `~/.claude` (except `settings.json` and `~/.claude.json` is RW — claude needs to write to it),
-- the host `minikube` cluster (via the joined docker network).
+- the host `minikube` cluster (via the joined docker network),
+- the persistent `$HOME` named volume (state survives across sessions — see below).
 
 It cannot reach:
 - host files outside the explicit mounts,
 - the host Docker socket (intentionally unmounted — no container escape),
 - hosts beyond the `minikube` docker bridge.
 
-Loosening any of these — adding the docker socket, mounting `$HOME`, opening additional networks — is a deliberate weakening of the boundary. Be explicit about why.
+Loosening any of these — adding the docker socket, mounting host `$HOME`, opening additional networks — is a deliberate weakening of the boundary. Be explicit about why.
+
+**Cross-session state in the home volume.** The persistent `$HOME` volume means a session can plant state (`.bashrc` modifications, shims in `~/.local/bin`, etc.) that the *next* sandbox session will execute. This is a marginal blast-radius increase over the old ephemeral home — the agent already has YOLO within a session, and `~/.claude` is already persistent — but the channel does not cross to the host: the host's `$HOME` is untouched. Reset with `make clean-home` if a session has gone off the rails.

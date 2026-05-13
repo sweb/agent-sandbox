@@ -20,9 +20,10 @@ On first invocation, `run.sh` builds the image (~3-5 min — kubectl/helm/stacka
 
 The container `$HOME` mirrors the host `$HOME` (same username, same UID/GID), so every mount lands at the same absolute path inside the container as it has on the host. This is deliberate — claude config stores absolute host paths (plugin marketplaces, MCP server paths) and they need to resolve unchanged.
 
-| Host path | Mode | Why |
+| Host path / source | Mode | Why |
 | --- | --- | --- |
 | `<workspace>` | rw | your code — edit it from the host, the agent sees the same bytes |
+| Docker volume `agent-sandbox-home-$USER` → `$HOME` | rw | persistent `$HOME` — tool caches (cargo, npm), per-cwd bash history, anything the agent installs in `$HOME`. Auto-seeded from the image on first use; the nested mounts below shadow their paths inside this volume. |
 | `~/.claude` | rw | session state, memory, auth |
 | `~/.claude/settings.json` | **ro** overlay | host hook config — agent must not modify (note: `settings.local.json` and project-level `.claude/settings.json` are still RW; see threat model) |
 | `~/.claude/plugins` | **ro** overlay | plugin manifests can declare hooks; same threat as `settings.json`. Marketplace refresh fails inside the sandbox — refresh from the host. |
@@ -30,7 +31,9 @@ The container `$HOME` mirrors the host `$HOME` (same username, same UID/GID), so
 | `~/.minikube` | ro | cluster certs and CA (mounted only if a cluster is running) |
 | `$TMP_KUBECONFIG` | ro | rewritten kubeconfig pointing at `https://minikube:8443` (cert paths are unchanged — they resolve naturally because `$HOME` matches) |
 
-Everything else (rustup toolchains, npm caches, anything the agent installs) lives inside the container and evaporates on exit.
+Anything written under `$HOME` (e.g. rustup toolchains, npm caches, fnm versions you install yourself) persists across sessions via the named volume. Anything outside `$HOME` (e.g. `/tmp`, packages installed at `/usr/local`) evaporates on exit.
+
+Bash history is **per workspace**: `$HISTFILE` is set in `/etc/bash.bashrc` to `~/.bash_history.d/<sha1-of-workspace-path>` (the workspace path comes from `AGENT_SANDBOX_WORKSPACE`, set by `run.sh`). Parallel sessions in *different* cwds don't share history; parallel sessions in the *same* cwd append safely (`shopt -s histappend`). The volume also holds an `~/.bash_history.d/INDEX` mapping hashes back to workspace paths if you ever poke around.
 
 ## Cluster networking
 
@@ -44,6 +47,7 @@ Everything else (rustup toolchains, npm caches, anything the agent installs) liv
 | Force a rebuild | `REBUILD=1 ~/path/to/agent-sandbox/run.sh` |
 | Override target workspace | `~/path/to/agent-sandbox/run.sh /some/other/dir` |
 | Drop into a shell instead of claude | `~/path/to/agent-sandbox/run.sh --shell` (useful for running other agentic CLIs in the same sandboxed environment) |
+| Reset persistent `$HOME` | `make clean-home` — wipes cargo/npm caches, fnm/Node versions installed in-sandbox, bash history. Image and image-baked tools (rust toolchain etc.) re-seed on next run. |
 | Reach a service on the host (e.g. ollama) | `HOST_GATEWAY=1 ~/path/to/agent-sandbox/run.sh` — adds `host.docker.internal` pointing at the host. The service must be listening on a non-loopback interface (for ollama: `OLLAMA_HOST=0.0.0.0:11434`). |
 
 ## Threat model
@@ -65,6 +69,8 @@ The threat model assumes the agent is *non-malicious but error-prone*. If you ne
 
 ## Known gotchas
 
+- **Image rebuilds don't refresh `$HOME`.** The persistent home volume keeps its contents across rebuilds, so a Dockerfile bump to rust/node leaves the old versions in `~/.cargo` / `~/.rustup`. Mirrors host reality (an OS upgrade doesn't auto-rewrite `~/.cargo`). Run `make clean-home` to wipe the volume and re-seed from the new image on next launch.
+- **Cross-session state in `$HOME`.** Two sandboxes running at once share the same `$HOME` volume. Tool caches (cargo, npm, fnm) are safe — they use lockfiles. Bash history is **not** shared between parallel sessions in different workspaces (it's keyed per workspace path), but `.bashrc`/`.profile` edits and anything else in `$HOME` are immediately visible to the other live session. If you don't want this, exit the other session first.
 - **kubeconfig staleness** — if you `minikube delete && minikube start` while a sandbox is running, the cert paths inside the container go stale. Exit and re-run `run.sh`.
 - **Driver lock-in** — `--driver=docker` is required for the network join to work. `kvm2` or `virtualbox` won't be on the `minikube` docker network.
 - **No in-container image builds** — there's no `buildah` / rootless-docker setup in the image. If you want a `build → minikube image load` flow, do the build on the host and load from there.

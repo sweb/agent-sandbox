@@ -86,6 +86,26 @@ RUN curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 30 \
  && npm install -g @anthropic-ai/claude-code \
  && rm -rf /var/lib/apt/lists/*
 
+# Per-cwd bash history: $HOME is a persistent named volume shared across all
+# sessions for this user, so without this every workspace would clobber the
+# others' history. AGENT_SANDBOX_WORKSPACE is set by run.sh.
+# Lives in /etc (image layer) not ~/.bashrc (volume) so rebuilds always pick
+# up changes here without needing `docker volume rm`.
+RUN cat >> /etc/bash.bashrc <<'EOF'
+
+if [ -n "${AGENT_SANDBOX_WORKSPACE:-}" ]; then
+    _hist_hash=$(printf '%s' "$AGENT_SANDBOX_WORKSPACE" | sha1sum | cut -c1-12)
+    mkdir -p "$HOME/.bash_history.d"
+    export HISTFILE="$HOME/.bash_history.d/$_hist_hash"
+    _index="$HOME/.bash_history.d/INDEX"
+    if ! grep -qxF "$_hist_hash $AGENT_SANDBOX_WORKSPACE" "$_index" 2>/dev/null; then
+        printf '%s %s\n' "$_hist_hash" "$AGENT_SANDBOX_WORKSPACE" >> "$_index"
+    fi
+    unset _hist_hash _index
+fi
+shopt -s histappend
+EOF
+
 # User creation (parameterized — run.sh rebuilds with matching UID/GID/USERNAME if labels don't match).
 # No sudo: the agent has no legitimate need for root inside the container, and
 # without docker userns-remap, in-container root maps to host UID 0.

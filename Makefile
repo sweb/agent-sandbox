@@ -14,7 +14,7 @@ BUILD_ARGS := \
 	--label sandbox.username=$(HOST_USER) \
 	-t $(IMAGE):$(TAG)
 
-.PHONY: help build rebuild clean size inspect shell
+.PHONY: help build rebuild clean clean-home size inspect shell
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -27,6 +27,9 @@ rebuild: ## Full rebuild ignoring the Docker layer cache
 
 clean: ## Remove the image
 	-docker image rm $(IMAGE):$(TAG)
+
+clean-home: ## Remove the persistent $HOME volume (forces fresh tool caches and bash history next run)
+	-docker volume rm agent-sandbox-home-$(HOST_USER)
 
 size: ## Print image size
 	@docker image inspect $(IMAGE):$(TAG) --format '{{.Size}}' \

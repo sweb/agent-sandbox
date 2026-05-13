@@ -67,6 +67,18 @@ DOCKER_ARGS=(
 )
 [ -n "${COLORTERM:-}" ] && DOCKER_ARGS+=(--env "COLORTERM=$COLORTERM")
 
+# Persistent $HOME via a named volume. Docker auto-seeds the volume from the
+# image's /home/$USER on first use, so build-time installs (.cargo, .rustup)
+# populate transparently. The nested ~/.claude / ~/.minikube / ~/.claude.json
+# bind mounts below still shadow their paths inside this volume.
+# AGENT_SANDBOX_WORKSPACE drives per-cwd $HISTFILE inside the container (see
+# /etc/bash.bashrc snippet baked into the image).
+HOME_VOLUME="agent-sandbox-home-$HOST_USER"
+DOCKER_ARGS+=(
+    -v "$HOME_VOLUME:$CONTAINER_HOME"
+    --env "AGENT_SANDBOX_WORKSPACE=$WORKSPACE"
+)
+
 # Expose the host to the container as `host.docker.internal`. Opt-in because
 # it's only useful when something is listening on the host (e.g. ollama bound
 # to 0.0.0.0) and we don't want to imply that connectivity by default.
