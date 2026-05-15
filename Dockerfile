@@ -164,6 +164,12 @@ RUN curl --proto '=https' --tlsv1.2 -sSf --retry 3 --retry-delay 5 --connect-tim
         --component clippy --component rustfmt \
  && rm /tmp/rustup-init.sh
 
+# pre-commit (many SDP repos enforce hooks via .pre-commit-config.yaml).
+# uv auto-fetches a Python interpreter; tool venv and the ~/.local/bin/pre-commit
+# symlink live in $HOME (persistent volume, seeded from this image layer on
+# first use). clean-home wipes it; the next session re-seeds from the image.
+RUN uv tool install pre-commit
+
 # nix (single-user, no daemon). /nix and /etc/nix/nix.conf were prepared above;
 # the installer reuses both. --no-modify-profile keeps the installer out of
 # ~/.bashrc — we source nix.sh from /etc/bash.bashrc (image layer) instead, so
