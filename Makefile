@@ -14,7 +14,7 @@ BUILD_ARGS := \
 	--label sandbox.username=$(HOST_USER) \
 	-t $(IMAGE):$(TAG)
 
-.PHONY: help build rebuild clean clean-home size inspect shell
+.PHONY: help build rebuild clean clean-home clean-nix size inspect shell
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -30,6 +30,9 @@ clean: ## Remove the image
 
 clean-home: ## Remove the persistent $HOME volume (forces fresh tool caches and bash history next run)
 	-docker volume rm agent-sandbox-home-$(HOST_USER)
+
+clean-nix: ## Remove the persistent /nix volume (forces nix to re-fetch closures; needed after NIX_VERSION bump)
+	-docker volume rm agent-sandbox-nix-$(HOST_USER)
 
 size: ## Print image size
 	@docker image inspect $(IMAGE):$(TAG) --format '{{.Size}}' \

@@ -6,7 +6,7 @@ A rootless Docker container running `claude --dangerously-skip-permissions` agai
 
 - `Dockerfile` — image recipe; parameterized by `UID`/`GID`/`USERNAME` build args
 - `run.sh` — host-side launcher; rebuilds image on label drift, mounts `~/.claude`, wires minikube net
-- `Makefile` — image management (`build`/`rebuild`/`clean`/`clean-home`/`inspect`/`size`/`shell`)
+- `Makefile` — image management (`build`/`rebuild`/`clean`/`clean-home`/`clean-nix`/`inspect`/`size`/`shell`)
 
 ## Design invariants
 
@@ -23,10 +23,13 @@ A rootless Docker container running `claude --dangerously-skip-permissions` agai
 
 5. **Persistent `$HOME` is a named Docker volume.** `run.sh` mounts `agent-sandbox-home-$HOST_USER` at `$CONTAINER_HOME`. Docker auto-seeds the volume from the image's `/home/$USER` on first use, so build-time installs (`.cargo`, `.rustup`) populate transparently with no Dockerfile refactor. The volume is shared across every `./run.sh` invocation for the same host user (workspace is still per-invocation; only `$HOME` persists). The nested `~/.claude`, `~/.minikube`, `~/.claude.json`, and `$TMP_KUBECONFIG` bind mounts still shadow their paths inside this volume. Image rebuilds do **not** refresh the volume — mirrors host reality (an OS upgrade doesn't auto-rewrite `~/.cargo`); if a Dockerfile bump changes rust/node/etc., run `make clean-home` (or `docker volume rm agent-sandbox-home-$USER`) to pick up the new versions in `$HOME`. Per-cwd `HISTFILE` is configured in `/etc/bash.bashrc` keyed by sha1 of `AGENT_SANDBOX_WORKSPACE` (set by `run.sh`), so parallel sessions in different workspaces don't pollute each other's bash history.
 
+6. **`nix` is single-user; `/nix` is its own named volume.** The operator-development plugin's skill says `nix-shell` is the canonical dev shell — so nix has to work inside the sandbox. Install mode is single-user (no `nix-daemon`, `/nix` owned by the agent user, installer ran without sudo). `sandbox = false` in `/etc/nix/nix.conf` because rootless docker can't provide the user namespaces nix's build sandbox needs — a small reproducibility loss accepted in exchange for working `nix-shell`. `flakes` + `nix-command` are on by default. `/nix` is a per-host-user named volume (`agent-sandbox-nix-$HOST_USER`) with the same auto-seed pattern as `$HOME`: build-time `/nix` seeds the volume on first attach, so closures fetched by `nix-shell` survive sessions instead of re-downloading from `cache.nixos.org` every time. Image rebuilds don't refresh the volume — after a `NIX_VERSION` bump, run `make clean-nix` (and usually `make clean-home` too, since `~/.nix-profile` symlinks live there).
+
 ## Build details that bit us
 
 - **`docker build --network=host` is required.** On this host the docker0 bridge crawled at ~55 KB/s to GitHub releases; with host networking it's ~5 MB/s. Both `run.sh` and the `Makefile` set this.
-- **`curl --retry 3 --retry-delay 5 --connect-timeout 30`** — avoid `--max-time`. The latter caps each attempt regardless of progress, so a slow-but-functional download will time out on every retry. `--connect-timeout` only bounds the connection handshake.
+- **`curl --retry 3 --retry-delay 5 --connect-timeout 30 --speed-limit 1024 --speed-time 30`** — avoid `--max-time`. The latter caps each attempt regardless of progress, so a slow-but-functional download will time out on every retry. `--connect-timeout` only bounds the connection handshake; `--speed-limit/--speed-time` aborts a *stalled* in-flight transfer (avg < 1 KB/s for 30s), which was the failure mode that hung rebuilds for ~100s before retry kicked in.
+- **apt timeouts** — `/etc/apt/apt.conf.d/99timeouts` sets `Acquire::http::Timeout=30` and `Acquire::https::Timeout=30` so `apt-get update` against a stalled mirror fails fast instead of hanging.
 - **Tool versions are pinned via `ARG`** at the top of the Dockerfile. Bump in one place. Verify asset names exist before bumping — GitHub release naming conventions shift (capitalization, arch suffix) without notice.
 
 ## Adding host paths to the container
@@ -45,9 +48,10 @@ Each path is bind-mounted RW at the same path inside the container.
 REBUILD=1 ./run.sh   # ignore label check; uses Docker layer cache
 make rebuild         # ignore Docker layer cache too (--no-cache)
 make clean-home      # nuke the persistent $HOME volume (caches, history, anything in $HOME)
+make clean-nix       # nuke the persistent /nix volume (forces re-fetch of all closures next run)
 ```
 
-`clean-home` is independent of image rebuild: rebuilding the image does **not** refresh the volume's contents. Run `clean-home` when you want a fresh `$HOME` (e.g. after bumping rust/node versions and wanting the new toolchain in `$HOME` rather than the seeded-from-old-image one).
+`clean-home` and `clean-nix` are independent of image rebuild: rebuilding the image does **not** refresh either volume's contents. Run `clean-home` when you want a fresh `$HOME` (e.g. after bumping rust/node versions and wanting the new toolchain in `$HOME` rather than the seeded-from-old-image one). Run `clean-nix` after a `NIX_VERSION` bump for the same reason; usually also `clean-home` since `~/.nix-profile` lives in the home volume.
 
 ## Threat model boundary
 
@@ -56,7 +60,8 @@ The agent has YOLO permissions on:
 - the bind-mounted host project (mounted at its host path),
 - host `~/.claude` (except `settings.json` and `~/.claude.json` is RW — claude needs to write to it),
 - the host `minikube` cluster (via the joined docker network),
-- the persistent `$HOME` named volume (state survives across sessions — see below).
+- the persistent `$HOME` named volume (state survives across sessions — see below),
+- the persistent `/nix` named volume (same cross-session reach as `$HOME`).
 
 It cannot reach:
 - host files outside the explicit mounts,
@@ -65,4 +70,4 @@ It cannot reach:
 
 Loosening any of these — adding the docker socket, mounting host `$HOME`, opening additional networks — is a deliberate weakening of the boundary. Be explicit about why.
 
-**Cross-session state in the home volume.** The persistent `$HOME` volume means a session can plant state (`.bashrc` modifications, shims in `~/.local/bin`, etc.) that the *next* sandbox session will execute. This is a marginal blast-radius increase over the old ephemeral home — the agent already has YOLO within a session, and `~/.claude` is already persistent — but the channel does not cross to the host: the host's `$HOME` is untouched. Reset with `make clean-home` if a session has gone off the rails.
+**Cross-session state in the home and /nix volumes.** The persistent `$HOME` volume means a session can plant state (`.bashrc` modifications, shims in `~/.local/bin`, etc.) that the *next* sandbox session will execute. The `/nix` volume is the same channel via a different file: a session could replace a store path the next session resolves through `~/.nix-profile`. This is a marginal blast-radius increase over the old ephemeral home — the agent already has YOLO within a session, and `~/.claude` is already persistent — but neither volume crosses to the host. Reset with `make clean-home` and/or `make clean-nix` if a session has gone off the rails.

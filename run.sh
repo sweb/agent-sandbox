@@ -74,8 +74,14 @@ DOCKER_ARGS=(
 # AGENT_SANDBOX_WORKSPACE drives per-cwd $HISTFILE inside the container (see
 # /etc/bash.bashrc snippet baked into the image).
 HOME_VOLUME="agent-sandbox-home-$HOST_USER"
+# Persistent /nix via its own named volume. Same auto-seed trick: image-layer
+# /nix (populated by the build-time single-user nix install) seeds the volume
+# on first attach. Closures pulled by nix-shell survive across sessions —
+# without this, every new container would re-fetch GBs from cache.nixos.org.
+NIX_VOLUME="agent-sandbox-nix-$HOST_USER"
 DOCKER_ARGS+=(
     -v "$HOME_VOLUME:$CONTAINER_HOME"
+    -v "$NIX_VOLUME:/nix"
     --env "AGENT_SANDBOX_WORKSPACE=$WORKSPACE"
 )
 
