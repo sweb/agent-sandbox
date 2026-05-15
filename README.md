@@ -29,7 +29,7 @@ The container `$HOME` mirrors the host `$HOME` (same username, same UID/GID), so
 | `~/.claude/plugins` | **ro** overlay | plugin manifests can declare hooks; same threat as `settings.json`. Marketplace refresh fails inside the sandbox — refresh from the host. |
 | `~/.claude.json` | rw | claude writes to this at runtime |
 | `~/.minikube` | ro | cluster certs and CA (mounted only if a cluster is running) |
-| `$TMP_KUBECONFIG` | ro | rewritten kubeconfig pointing at `https://minikube:8443` (cert paths are unchanged — they resolve naturally because `$HOME` matches) |
+| `$TMP_KUBECONFIG` | ro | rewritten kubeconfig pointing at `https://<profile>:8443` (cert paths are unchanged — they resolve naturally because `$HOME` matches) |
 
 Anything written under `$HOME` (e.g. rustup toolchains, npm caches, fnm versions you install yourself) persists across sessions via the named volume. Anything outside `$HOME` (e.g. `/tmp`, packages installed at `/usr/local`) evaporates on exit.
 
@@ -37,7 +37,9 @@ Bash history is **per workspace**: `$HISTFILE` is set in `/etc/bash.bashrc` to `
 
 ## Cluster networking
 
-`run.sh` joins the container to the `minikube` docker network so `kubectl`/`helm` reach the API server at `https://minikube:8443`. The host kubeconfig is rewritten on the fly: only `clusters[].cluster.server` is changed to `https://minikube:8443`. Cert paths under `~/.minikube/...` are left alone because container `$HOME` matches host `$HOME` and `~/.minikube` is bind-mounted at the same path.
+`run.sh` joins the container to the minikube docker network so `kubectl`/`helm` reach the API server at `https://<profile>:8443`. The host kubeconfig is rewritten on the fly: only `clusters[].cluster.server` is changed to point at the in-network hostname. Cert paths under `~/.minikube/...` are left alone because container `$HOME` matches host `$HOME` and `~/.minikube` is bind-mounted at the same path.
+
+The profile name is resolved in order: `MINIKUBE_PROFILE` env var > kubeconfig's `current-context` > literal `minikube`. For a default `minikube start`, you don't need to set anything. For a custom profile (`minikube start -p foo`), `current-context` will normally already be `foo` and auto-detection picks it up; set `MINIKUBE_PROFILE=foo` explicitly if your kubectl context is pointing somewhere else.
 
 ## Common operations
 

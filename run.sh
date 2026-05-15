@@ -93,18 +93,28 @@ if [ -n "${HOST_GATEWAY:-}" ]; then
 fi
 
 # --- Minikube wiring (non-fatal if absent) ---
+# Profile resolution: explicit env var > kubeconfig current-context > literal
+# "minikube". minikube names the profile, docker network, and in-network
+# hostname identically, so the same string works for `--network=` and for the
+# rewritten kubeconfig `server:` URL.
+MINIKUBE_PROFILE="${MINIKUBE_PROFILE:-}"
+if [ -z "$MINIKUBE_PROFILE" ] && [ -f "$HOME/.kube/config" ]; then
+    MINIKUBE_PROFILE="$(yq '.current-context // ""' "$HOME/.kube/config" 2>/dev/null || true)"
+fi
+MINIKUBE_PROFILE="${MINIKUBE_PROFILE:-minikube}"
+
 TMP_KUBECONFIG=""
 cleanup() {
     [ -n "$TMP_KUBECONFIG" ] && [ -f "$TMP_KUBECONFIG" ] && rm -f "$TMP_KUBECONFIG"
 }
 trap cleanup EXIT
 
-if docker network inspect minikube >/dev/null 2>&1; then
-    DOCKER_ARGS+=(--network=minikube)
+if docker network inspect "$MINIKUBE_PROFILE" >/dev/null 2>&1; then
+    DOCKER_ARGS+=(--network="$MINIKUBE_PROFILE")
 
     if [ -f "$HOME/.kube/config" ]; then
         TMP_KUBECONFIG=$(mktemp -t kubeconfig.XXXXXX)
-        yq '(.clusters[].cluster.server) = "https://minikube:8443"' \
+        yq '(.clusters[].cluster.server) = "https://'"$MINIKUBE_PROFILE"':8443"' \
             "$HOME/.kube/config" > "$TMP_KUBECONFIG"
         # Cert paths under $HOME/.minikube are already at the right path inside
         # the container since CONTAINER_HOME mirrors $HOME — no rewrite needed.
@@ -115,8 +125,9 @@ if docker network inspect minikube >/dev/null 2>&1; then
         DOCKER_ARGS+=(-v "$HOME/.minikube:$CONTAINER_HOME/.minikube:ro")
     fi
 else
-    echo "note: docker network 'minikube' not found — skipping cluster wiring."
+    echo "note: docker network '$MINIKUBE_PROFILE' not found — skipping cluster wiring."
     echo "      Run 'minikube start --driver=docker' first if you want kubectl access."
+    echo "      For a non-default profile, set MINIKUBE_PROFILE=<name> or switch kubectl context."
 fi
 
 # --- ~/.claude: RW base mount with RO overlays for hook/plugin code. ---
